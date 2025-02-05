@@ -1,0 +1,83 @@
+session_name = '210803_133520_Alfie';
+
+imec = 0; %Probe index
+% sorted_units_folder = 'Z:\Data\210803_133520_Alfie_g0\210803_133520_Alfie_g0_imec0\RAW\'; %Define folder where Kilosort results are saved
+sorted_units_folder = ['Z:\Data' filesep session_name '_g0' filesep session_name '_g0_imec' num2str(imec) filesep 'RAW']; %Automatically define based on session_name.
+se
+addpath(genpath(pwd))
+paradigm_data = load(['.' filesep 'data' filesep 'fob_paradigm_data_' session_name '_imec' num2str(imec) '.mat']);
+peri_stimulus_range = -200:400; %Range to extract for raster
+
+[ units ] = kilosort_read_spikes_minimal( sorted_units_folder, nan); %function to read out kilosort results
+units = units(~isnan(cat(1,units.unit_id))); %Ignore any nan units
+n_units = length(units);
+n_times = ceil(max(cat(1,units.spike_time))*1000);
+
+%Create boolean time course of entire experiment from spike times
+timecourse = false(n_units,n_times);
+for unit_index = 1:n_units
+    timecourse(unit_index,round(units(unit_index).spike_time*1000)) = true;
+end
+
+% %Plot time course of firing rates for all units
+% figure(1);imagesc(zscore(smoothdata(timecourse','movmean',10000),[],1)')
+
+%Compute rasters from timecourse
+fob_raster = computeRaster(round(paradigm_data.stimulus_on_times_in_kilosort_time*1e3),timecourse,-peri_stimulus_range(1),peri_stimulus_range(end));
+
+time_window_response = [50, paradigm_data.on_duration + 100];
+time_window_baseline = [0, 50];
+start_index_response = find(peri_stimulus_range==time_window_response(1));
+end_index_response = find(peri_stimulus_range==time_window_response(2));
+start_index_baseline = find(peri_stimulus_range==time_window_baseline(1));
+end_index_baseline = find(peri_stimulus_range==time_window_baseline(2));
+responses_avg_across_time = squeeze(mean(fob_raster(:,start_index_response:end_index_response,:),2)); %n_trials x n_units
+baselines_avg_across_time = squeeze(mean(fob_raster(:,start_index_baseline:end_index_baseline,:),2)); %n_trials x n_units
+unit_baselines = mean(baselines_avg_across_time,1); %n_trials x n_units
+nstimuli = max(paradigm_data.stimulus_index_valid);
+
+%Compute orange matrices (average responses with rows as cells and stimuli as columns)
+orange_matrix = nan(size(responses_avg_across_time,2),nstimuli);
+orange_matrix_first_half = nan(size(responses_avg_across_time,2),nstimuli);
+orange_matrix_second_half = nan(size(responses_avg_across_time,2),nstimuli);
+orange_matrix_first_random_split= nan(size(responses_avg_across_time,2),nstimuli);
+orange_matrix_second_random_split = nan(size(responses_avg_across_time,2),nstimuli);
+for stimulus_index = 1:nstimuli
+    stimulus_index_trials = find(paradigm_data.stimulus_index_valid == stimulus_index);
+    orange_matrix(:,stimulus_index)= mean(responses_avg_across_time(stimulus_index_trials,:),1);
+    orange_matrix_first_half(:,stimulus_index)= mean(responses_avg_across_time(stimulus_index_trials(1:round(length(stimulus_index_trials)/2)),:),1);
+    orange_matrix_second_half(:,stimulus_index)= mean(responses_avg_across_time(stimulus_index_trials((1+round(length(stimulus_index_trials)/2)):end),:),1);
+    stimulus_index_trials_shuffled = shuffle_array(stimulus_index_trials);
+    orange_matrix_first_random_split(:,stimulus_index)= mean(responses_avg_across_time(stimulus_index_trials_shuffled(1:round(length(stimulus_index_trials)/2)),:),1);
+    orange_matrix_second_random_split(:,stimulus_index)= mean(responses_avg_across_time(stimulus_index_trials_shuffled((1+round(length(stimulus_index_trials)/2)):end),:),1);
+
+end
+
+
+orange_matrix_minus_baseline_normalized = subtract_baselines_and_normalize(orange_matrix,unit_baselines');
+orange_matrix_first_half_minus_baseline_normalized = subtract_baselines_and_normalize(orange_matrix_first_half,unit_baselines');
+orange_matrix_second_half_minus_baseline_normalized = subtract_baselines_and_normalize(orange_matrix_second_half,unit_baselines');
+orange_matrix_first_random_split_minus_baseline_normalized = subtract_baselines_and_normalize(orange_matrix_first_random_split,unit_baselines');
+orange_matrix_second_random_split_minus_baseline_normalized = subtract_baselines_and_normalize(orange_matrix_second_random_split,unit_baselines');
+
+%Compute correlation coefficients between tuning curves computed using two different halves of trials for each cell.
+correlation_coefficients_first_vs_second_half = nan(n_units,1);
+correlation_coefficients_random_split = nan(n_units,1);
+for cell_index = 1:size(orange_matrix_first_half_minus_baseline_normalized,1)
+    [r,p] = corrcoef(orange_matrix_first_half_minus_baseline_normalized(cell_index,:),orange_matrix_second_half_minus_baseline_normalized(cell_index,:));
+    correlation_coefficients_first_vs_second_half(cell_index) = r(2);
+    [r,p] = corrcoef(orange_matrix_first_random_split_minus_baseline_normalized(cell_index,:),orange_matrix_second_random_split_minus_baseline_normalized(cell_index,:));
+    correlation_coefficients_random_split(cell_index) = r(2);
+end
+
+%Plot results
+figure(3);
+orange_image = plot_orange_plot(orange_matrix_minus_baseline_normalized);
+figure(4);
+subplot(2,2,1);orange_image = plot_orange_plot(orange_matrix_first_half_minus_baseline_normalized);title('First half')
+subplot(2,2,2);orange_image = plot_orange_plot(orange_matrix_second_half_minus_baseline_normalized);title('Second half')
+subplot(2,2,3);orange_image = plot_orange_plot(orange_matrix_first_random_split_minus_baseline_normalized);title('First split')
+subplot(2,2,4);orange_image = plot_orange_plot(orange_matrix_second_random_split_minus_baseline_normalized);title('Second split')
+figure(5);
+subplot(2,1,1);histogram(correlation_coefficients_first_vs_second_half,-1:.1:1);xlabel('Correlation coefficient first vs second half.');ylabel('Count');title(['r=' num2str(nanmean(correlation_coefficients_first_vs_second_half))])
+subplot(2,1,2);histogram(correlation_coefficients_random_split,-1:.1:1);xlabel('Correlation coefficient random split.');ylabel('Count');title(['r=' num2str(nanmean(correlation_coefficients_random_split))])
